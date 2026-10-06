@@ -1,0 +1,96 @@
+name: Perf remote run
+
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: Environment alias used by config/environments/<alias>.env
+        required: true
+        default: qa1
+        type: choice
+        options:
+          - qa1
+      shards:
+        description: Number of Playwright shards
+        required: true
+        default: '6'
+        type: string
+      baseline_user:
+        description: Baseline login for the screen-timing run
+        required: true
+        default: aml_investigator
+        type: string
+      perf_users:
+        description: Comma-separated role logins for the load run
+        required: true
+        default: export_lc_investigator,outgoing_coll_supervisor,outgoing_coll_investigator,legal_supervisor,legal_investigator,ssu_record_manager,snb_it_admin,non_ssu_admin,non_ssu_record_manager,ssu_admin,query_user,compliance_supervisor,ssu_supervisor,compliance_investigator,payment_ops_supervisor,payment_ops_investigator,aml_supervisor,aml_investigator,ssu_investigator,inward_lg_investigator,outward_lg_investigator,import_lc_investigator,incoming_coll_supervisor,outward_lg_supervisor,incoming_coll_investigator,inward_lg_supervisor,import_lc_supervisor
+        type: string
+
+jobs:
+  perf-bombard:
+    name: Remote performance run
+    if: github.ref == 'refs/heads/project/snb_v93'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      BASE_URL: ${{ secrets.BASE_URL_SNB93 }}
+      USER_DATA_ADMIN_PASSWORD: ${{ secrets.USER_DATA_ADMIN_PASSWORD }}
+      USER_DATA_DEFAULT_PASSWORD: ${{ secrets.USER_DATA_DEFAULT_PASSWORD }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      APPLICATION_ENVIRONMENT: ${{ github.event.inputs.alias }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare config for perf users
+        shell: bash
+        run: |
+          mkdir -p config
+          cat > config/local.properties <<EOF
+          ui.baseUrl=${BASE_URL}
+          application.environment=${APPLICATION_ENVIRONMENT}
+          userDataAdminUsername=admin
+          userDataAdminPassword=${USER_DATA_ADMIN_PASSWORD}
+          userDataDefaultPassword=${USER_DATA_DEFAULT_PASSWORD}
+          perf.baselineUser=${{ github.event.inputs.baseline_user }}
+          perf.users=${{ github.event.inputs.perf_users }}
+          perf.virtualUsers=50
+          perf.iterations=1
+          perf.warmupIterations=0
+          perf.thinkTimeMs=250
+          perf.rampUpMs=1000
+          perf.readyTimeoutMs=60000
+          perf.maxErrorRatePct=20
+          perf.db.captureTopSql=false
+          DbConnectionString=
+          DbUsername=
+          DbPassword=${DB_PASSWORD}
+          EOF
+
+      - name: Run perf shards
+        run: |
+          npm run perf:bombard -- "${{ github.event.inputs.alias }}" \
+            --shards=${{ github.event.inputs.shards }} \
+            --run-id="remote-${{ github.event.inputs.alias }}-${{ github.event.inputs.shards }}x"
+
+      - name: Upload perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ github.event.inputs.alias }}-${{ github.event.inputs.shards }}x
+          path: |
+            reports/perf/**
+            test-results/**
+            playwright-report/**
