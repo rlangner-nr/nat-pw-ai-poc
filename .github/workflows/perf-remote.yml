@@ -74,6 +74,9 @@ jobs:
           perf.readyTimeoutMs=60000
           perf.maxErrorRatePct=20
           perf.db.captureTopSql=false
+          perf.db.timedQueries=projects/snb/sql/wlm-alerts-list-top120.sql
+          perf.db.maxQueryMs=1000
+          perf.db.maxRows=120
           DbConnectionString=
           DbUsername=
           DbPassword=${DB_PASSWORD}
