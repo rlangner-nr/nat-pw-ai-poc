@@ -11,7 +11,7 @@ on:
         options:
           - qa1
       shards:
-        description: Number of Playwright shards
+        description: Playwright shards to run in parallel
         required: true
         default: '6'
         type: string
@@ -21,7 +21,7 @@ on:
         default: aml_investigator
         type: string
       perf_users:
-        description: Comma-separated role logins for the load run
+        description: Comma-separated logins for the concurrent load run
         required: true
         default: export_lc_investigator,outgoing_coll_supervisor,outgoing_coll_investigator,legal_supervisor,legal_investigator,ssu_record_manager,snb_it_admin,non_ssu_admin,non_ssu_record_manager,ssu_admin,query_user,compliance_supervisor,ssu_supervisor,compliance_investigator,payment_ops_supervisor,payment_ops_investigator,aml_supervisor,aml_investigator,ssu_investigator,inward_lg_investigator,outward_lg_investigator,import_lc_investigator,incoming_coll_supervisor,outward_lg_supervisor,incoming_coll_investigator,inward_lg_supervisor,import_lc_supervisor
         type: string
@@ -29,7 +29,6 @@ on:
 jobs:
   perf-bombard:
     name: Remote performance run
-    if: github.ref == 'refs/heads/project/snb_v93'
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -38,7 +37,6 @@ jobs:
       USER_DATA_ADMIN_PASSWORD: ${{ secrets.USER_DATA_ADMIN_PASSWORD }}
       USER_DATA_DEFAULT_PASSWORD: ${{ secrets.USER_DATA_DEFAULT_PASSWORD }}
       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-      APPLICATION_ENVIRONMENT: ${{ github.event.inputs.alias }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,13 +52,29 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Prepare config for perf users
+      - name: Create runtime environment alias
+        shell: bash
+        run: |
+          mkdir -p config/environments
+          cat > config/environments/qa1.env <<'EOF'
+          APPLICATION_ENVIRONMENT=qa93
+          ui.baseUrl=${{ secrets.BASE_URL_SNB93 }}
+          ssh.host=snb93nds.qa.batch.1.fs.caws.local
+          ssh.user=ec2-user
+          DbConnectionString=jdbc:oracle:thin:@snb93nds.db.fs.caws.local:1521/ORA19
+          DbUsername=snb93nds_qa_1
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          USER_DATA_ADMIN_PASSWORD=${{ secrets.USER_DATA_ADMIN_PASSWORD }}
+          USER_DATA_DEFAULT_PASSWORD=${{ secrets.USER_DATA_DEFAULT_PASSWORD }}
+          EOF
+
+      - name: Prepare local config for perf users
         shell: bash
         run: |
           mkdir -p config
           cat > config/local.properties <<EOF
           ui.baseUrl=${BASE_URL}
-          application.environment=${APPLICATION_ENVIRONMENT}
+          application.environment=qa93
           userDataAdminUsername=admin
           userDataAdminPassword=${USER_DATA_ADMIN_PASSWORD}
           userDataDefaultPassword=${USER_DATA_DEFAULT_PASSWORD}
