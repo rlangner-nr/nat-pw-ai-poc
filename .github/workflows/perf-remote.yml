@@ -1,17 +1,33 @@
-name: Perf remote run
+name: Trigger Playwright_RUNNER on Jenkins
 
 on:
   workflow_dispatch:
     inputs:
-      alias:
-        description: Environment alias used by config/environments/<alias>.env
+      qa_environment:
+        description: QA environment name
         required: true
-        default: qa1
+        default: snb_perf93
+        type: string
+      testing_snb_branch:
+        description: Branch in the testing repo
+        required: true
+        default: snb_apps_93
         type: choice
         options:
-          - qa1
+          - snb_apps_93
+          - RL_snb_apps_93
+          - MS2_snb_apps_93
+          - yaro_snb_apps_93
+      testing_tag_name:
+        description: Tag to execute
+        required: true
+        default: '@SSSMP1VUIO-NewToReject_PERF'
+        type: choice
+        options:
+          - '@SSSMP1VUIO-NewToReject_PERF'
+          - '@SSSMP1VUIO-NewToRelease_PERF'
       shards:
-        description: Playwright shards to run in parallel
+        description: Number of Playwright shards
         required: true
         default: '6'
         type: string
@@ -21,93 +37,73 @@ on:
         default: aml_investigator
         type: string
       perf_users:
-        description: Comma-separated logins for the concurrent load run
+        description: Comma-separated usernames for concurrent load
         required: true
         default: export_lc_investigator,outgoing_coll_supervisor,outgoing_coll_investigator,legal_supervisor,legal_investigator,ssu_record_manager,snb_it_admin,non_ssu_admin,non_ssu_record_manager,ssu_admin,query_user,compliance_supervisor,ssu_supervisor,compliance_investigator,payment_ops_supervisor,payment_ops_investigator,aml_supervisor,aml_investigator,ssu_investigator,inward_lg_investigator,outward_lg_investigator,import_lc_investigator,incoming_coll_supervisor,outward_lg_supervisor,incoming_coll_investigator,inward_lg_supervisor,import_lc_supervisor
         type: string
 
 jobs:
-  perf-bombard:
-    name: Remote performance run
+  trigger-jenkins:
+    name: Trigger Playwright_RUNNER
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 30
 
     env:
-      BASE_URL: ${{ secrets.BASE_URL_SNB93 }}
-      USER_DATA_ADMIN_PASSWORD: ${{ secrets.USER_DATA_ADMIN_PASSWORD }}
-      USER_DATA_DEFAULT_PASSWORD: ${{ secrets.USER_DATA_DEFAULT_PASSWORD }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      JENKINS_URL: ${{ secrets.JENKINS_URL }}
+      JENKINS_USER: ${{ secrets.JENKINS_USER }}
+      JENKINS_API_TOKEN: ${{ secrets.JENKINS_API_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Create runtime environment alias
+      - name: Validate Jenkins secrets
         shell: bash
         run: |
-          mkdir -p config/environments
-          cat > config/environments/qa1.env <<'EOF'
-          APPLICATION_ENVIRONMENT=qa93
-          ui.baseUrl=${{ secrets.BASE_URL_SNB93 }}
-          ssh.host=snb93nds.qa.batch.1.fs.caws.local
-          ssh.user=ec2-user
-          DbConnectionString=jdbc:oracle:thin:@snb93nds.db.fs.caws.local:1521/ORA19
-          DbUsername=snb93nds_qa_1
-          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-          USER_DATA_ADMIN_PASSWORD=${{ secrets.USER_DATA_ADMIN_PASSWORD }}
-          USER_DATA_DEFAULT_PASSWORD=${{ secrets.USER_DATA_DEFAULT_PASSWORD }}
-          EOF
+          test -n "$JENKINS_URL" || { echo "Missing JENKINS_URL secret"; exit 1; }
+          test -n "$JENKINS_USER" || { echo "Missing JENKINS_USER secret"; exit 1; }
+          test -n "$JENKINS_API_TOKEN" || { echo "Missing JENKINS_API_TOKEN secret"; exit 1; }
 
-      - name: Prepare local config for perf users
+      - name: Trigger Jenkins job
         shell: bash
         run: |
-          mkdir -p config
-          cat > config/local.properties <<EOF
-          ui.baseUrl=${BASE_URL}
-          application.environment=qa93
-          userDataAdminUsername=admin
-          userDataAdminPassword=${USER_DATA_ADMIN_PASSWORD}
-          userDataDefaultPassword=${USER_DATA_DEFAULT_PASSWORD}
-          perf.baselineUser=${{ github.event.inputs.baseline_user }}
-          perf.users=${{ github.event.inputs.perf_users }}
-          perf.virtualUsers=50
-          perf.iterations=1
-          perf.warmupIterations=0
-          perf.thinkTimeMs=250
-          perf.rampUpMs=1000
-          perf.readyTimeoutMs=60000
-          perf.maxErrorRatePct=20
-          perf.db.captureTopSql=false
-          perf.db.timedQueries=projects/snb/sql/wlm-alerts-list-top120.sql
-          perf.db.maxQueryMs=1000
-          perf.db.maxRows=120
-          DbConnectionString=
-          DbUsername=
-          DbPassword=${DB_PASSWORD}
-          EOF
+          set -euo pipefail
 
-      - name: Run perf shards
+          curl --fail --silent --show-error \
+            -u "${JENKINS_USER}:${JENKINS_API_TOKEN}" \
+            --data-urlencode "json={
+              \"parameter\":[
+                {\"name\":\"QA_ENVIRONMENT\",\"value\":\"${{ github.event.inputs.qa_environment }}\"},
+                {\"name\":\"TESTING_SNB_BRANCH\",\"value\":\"${{ github.event.inputs.testing_snb_branch }}\"},
+                {\"name\":\"TESTING_TAG_NAME\",\"value\":\"${{ github.event.inputs.testing_tag_name }}\"},
+                {\"name\":\"SHARDS\",\"value\":\"${{ github.event.inputs.shards }}\"},
+                {\"name\":\"BASELINE_USER\",\"value\":\"${{ github.event.inputs.baseline_user }}\"},
+                {\"name\":\"PERF_USERS\",\"value\":\"${{ github.event.inputs.perf_users }}\"}
+              ]
+            }" \
+            "${JENKINS_URL}/job/Playwright_RUNNER/buildWithParameters"
+
+      - name: Poll Jenkins result
+        shell: bash
         run: |
-          npm run perf:bombard -- "${{ github.event.inputs.alias }}" \
-            --shards=${{ github.event.inputs.shards }} \
-            --run-id="remote-${{ github.event.inputs.alias }}-${{ github.event.inputs.shards }}x"
+          set -euo pipefail
 
-      - name: Upload perf artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-${{ github.event.inputs.alias }}-${{ github.event.inputs.shards }}x
-          path: |
-            reports/perf/**
-            test-results/**
-            playwright-report/**
+          for i in $(seq 1 120); do
+            JSON=$(curl --fail --silent --show-error \
+              -u "${JENKINS_USER}:${JENKINS_API_TOKEN}" \
+              "${JENKINS_URL}/job/Playwright_RUNNER/lastBuild/api/json?tree=number,result,url") || exit 1
+
+            RESULT=$(printf '%s' "$JSON" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("result") or "")')
+            NUMBER=$(printf '%s' "$JSON" | python -c 'import json,sys; data=json.load(sys.stdin); print(data.get("number") or "")')
+
+            if [ -n "$RESULT" ]; then
+              echo "Jenkins build #${NUMBER} finished with result: ${RESULT}"
+              if [ "$RESULT" != "SUCCESS" ]; then
+                exit 1
+              fi
+              exit 0
+            fi
+
+            echo "Build #${NUMBER:-unknown} still running... waiting 10s"
+            sleep 10
+          done
+
+          echo "Timed out waiting for Jenkins build to finish"
+          exit 1
