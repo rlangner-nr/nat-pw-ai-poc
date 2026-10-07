@@ -1,0 +1,213 @@
+name: Perf run
+
+run-name: "perf ${{ inputs.alias }} / ${{ inputs.suite }} [${{ inputs.correlation_id }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      alias:
+        description: Environment alias (needs a matching ENV_<ALIAS> secret)
+        required: true
+        default: qa1
+        type: choice
+        options:
+          - qa1
+          - qa2
+          - qa4
+          - perf
+          - perf2
+      suite:
+        description: Which perf suite to run
+        required: true
+        default: screens
+        type: choice
+        options:
+          - screens
+          - load
+          - db
+          - all
+      shards:
+        description: PERF_SHARD total (1 = no sharding)
+        required: false
+        default: '1'
+        type: string
+      shard_index:
+        description: PERF_SHARD index of this run
+        required: false
+        default: '1'
+        type: string
+      baseline_user:
+        description: Overrides perf.baselineUser when set
+        required: false
+        default: ''
+        type: string
+      perf_users:
+        description: Overrides perf.users (comma separated) when set
+        required: false
+        default: ''
+        type: string
+      runner_label:
+        description: Runner that can reach the QA network
+        required: false
+        default: self-hosted
+        type: string
+      correlation_id:
+        description: Caller-supplied id, echoed into run-name so Jenkins can find this run
+        required: false
+        default: manual
+        type: string
+
+jobs:
+  perf:
+    name: ${{ inputs.suite }} on ${{ inputs.alias }}
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 180
+
+    env:
+      ENV_FILE: config/environments/${{ inputs.alias }}.env
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      PERF_SHARD: ${{ inputs.shard_index }}/${{ inputs.shards }}
+      PERF_RUN_ID: gha-${{ inputs.alias }}-${{ github.run_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: |
+          set -eu
+
+          REV=$(node -p "require('./node_modules/playwright-core/browsers.json').browsers.find(b=>b.name==='chromium').revision")
+          VER=$(node -p "require('./node_modules/playwright-core/browsers.json').browsers.find(b=>b.name==='chromium').browserVersion")
+          echo "Chromium revision=$REV version=$VER"
+
+          # The Playwright CDN sits behind Azure Front Door and is blocked on some
+          # internal networks. Probe it first and fall back to Google Chrome for
+          # Testing, which serves the very same build under a different layout.
+          if curl -fsS -o /dev/null --connect-timeout 10 --max-time 20 \
+               -r 0-1023 "https://cdn.playwright.dev/builds/cft/$VER/linux64/chrome-linux64.zip"; then
+            echo "Playwright CDN reachable - using the standard installer"
+            unset PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+            npx playwright install --with-deps chromium
+            exit 0
+          fi
+
+          echo "Playwright CDN unreachable - falling back to Google Chrome for Testing"
+          BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+          mkdir -p "$BROWSERS_DIR"
+
+          if command -v unzip >/dev/null 2>&1; then
+            HAVE_UNZIP=yes
+          else
+            HAVE_UNZIP=no
+            npm i --no-save extract-zip >/dev/null 2>&1
+          fi
+
+          fetch_browser() {
+            PKG_DIR="$1"; ZIP_NAME="$2"; BIN_REL="$3"
+            TARGET="${BROWSERS_DIR}/${PKG_DIR}"
+
+            if [ -f "${TARGET}/INSTALLATION_COMPLETE" ] && [ -x "${TARGET}/${BIN_REL}" ]; then
+              echo "  ${PKG_DIR}: already installed"
+              return 0
+            fi
+
+            echo "  ${PKG_DIR}: downloading ${ZIP_NAME}"
+            mkdir -p "$TARGET"
+            curl -fL -C - --retry 5 --retry-delay 10 --retry-connrefused \
+                 --connect-timeout 30 --max-time 1800 \
+                 --speed-limit 2048 --speed-time 120 \
+                 -o "/tmp/${ZIP_NAME}" \
+                 "https://storage.googleapis.com/chrome-for-testing-public/${VER}/linux64/${ZIP_NAME}"
+
+            rm -rf "${TARGET:?}"/*
+            if [ "$HAVE_UNZIP" = yes ]; then
+              unzip -q "/tmp/${ZIP_NAME}" -d "$TARGET"
+            else
+              node -e "require('extract-zip')(process.argv[1],{dir:process.argv[2]})" "/tmp/${ZIP_NAME}" "$TARGET"
+            fi
+            rm -f "/tmp/${ZIP_NAME}"
+
+            chmod -R +x "$TARGET" 2>/dev/null || true
+            if [ ! -x "${TARGET}/${BIN_REL}" ]; then
+              echo "  ERROR: ${TARGET}/${BIN_REL} missing"; exit 1
+            fi
+            # Playwright treats this empty marker as "install finished".
+            : > "${TARGET}/INSTALLATION_COMPLETE"
+            echo "  ${PKG_DIR}: OK"
+          }
+
+          fetch_browser "chromium-${REV}" "chrome-linux64.zip" "chrome-linux64/chrome"
+          fetch_browser "chromium_headless_shell-${REV}" "chrome-headless-shell-linux64.zip" "chrome-headless-shell-linux64/chrome-headless-shell"
+
+          npx playwright install-deps chromium || echo "install-deps skipped"
+
+      - name: Write environment file
+        env:
+          ENV_QA1: ${{ secrets.ENV_QA1 }}
+          ENV_QA2: ${{ secrets.ENV_QA2 }}
+          ENV_QA4: ${{ secrets.ENV_QA4 }}
+          ENV_PERF: ${{ secrets.ENV_PERF }}
+          ENV_PERF2: ${{ secrets.ENV_PERF2 }}
+          ALIAS: ${{ inputs.alias }}
+          BASELINE_USER: ${{ inputs.baseline_user }}
+          PERF_USERS: ${{ inputs.perf_users }}
+        run: |
+          set -eu
+          VAR="ENV_$(printf '%s' "$ALIAS" | tr '[:lower:]' '[:upper:]')"
+          eval "CONTENT=\${$VAR:-}"
+
+          if [ -z "$CONTENT" ]; then
+            echo "::error::Missing secret $VAR - add it with the contents of config/environments/${ALIAS}.env"
+            exit 1
+          fi
+
+          mkdir -p config/environments
+          printf '%s\n' "$CONTENT" > "$ENV_FILE"
+          echo "Wrote $ENV_FILE ($(wc -l < "$ENV_FILE") lines)"
+
+          # Optional per-run overrides land in local.properties, which wins over defaults.
+          : > config/local.properties
+          if [ -n "$BASELINE_USER" ]; then
+            echo "perf.baselineUser=${BASELINE_USER}" >> config/local.properties
+          fi
+          if [ -n "$PERF_USERS" ]; then
+            echo "perf.users=${PERF_USERS}" >> config/local.properties
+          fi
+          echo "local.properties:"; cat config/local.properties
+
+      - name: Print resolved config
+        run: npm run config:print
+
+      - name: Run perf suite
+        run: |
+          set -eu
+          case "${{ inputs.suite }}" in
+            screens) GREP='@perf-screens' ;;
+            load)    GREP='@perf-load' ;;
+            db)      GREP='@perf-db' ;;
+            all)     GREP='@perf' ;;
+            *)       echo "Unknown suite"; exit 1 ;;
+          esac
+          echo "ENV_FILE=$ENV_FILE PERF_SHARD=$PERF_SHARD grep=$GREP"
+          npx playwright test --project=chromium --grep "$GREP" --workers=1 --reporter=line
+
+      - name: Upload reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ inputs.alias }}-${{ inputs.suite }}-${{ github.run_number }}
+          path: |
+            reports/perf/**
+            playwright-report/**
+          retention-days: 14
+          if-no-files-found: ignore
