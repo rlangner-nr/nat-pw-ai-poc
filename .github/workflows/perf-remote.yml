@@ -8,16 +8,18 @@ on:
         required: true
         default: snb_perf93
         type: string
+
       testing_snb_branch:
         description: Branch in the testing repo
         required: true
-        default: snb_apps_93
+        default: project/snb_v93
         type: choice
         options:
-          - snb_apps_93
+          - project/snb_v93
           - RL_snb_apps_93
           - MS2_snb_apps_93
           - yaro_snb_apps_93
+
       testing_tag_name:
         description: Tag to execute
         required: true
@@ -26,16 +28,19 @@ on:
         options:
           - '@SSSMP1VUIO-NewToReject_PERF'
           - '@SSSMP1VUIO-NewToRelease_PERF'
+
       shards:
         description: Number of Playwright shards
         required: true
         default: '6'
         type: string
+
       baseline_user:
         description: Baseline login for the screen-timing run
         required: true
         default: aml_investigator
         type: string
+
       perf_users:
         description: Comma-separated usernames for concurrent load
         required: true
@@ -57,6 +62,7 @@ jobs:
       - name: Validate Jenkins secrets
         shell: bash
         run: |
+          set -euo pipefail
           test -n "$JENKINS_URL" || { echo "Missing JENKINS_URL secret"; exit 1; }
           test -n "$JENKINS_USER" || { echo "Missing JENKINS_USER secret"; exit 1; }
           test -n "$JENKINS_API_TOKEN" || { echo "Missing JENKINS_API_TOKEN secret"; exit 1; }
