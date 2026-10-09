@@ -192,6 +192,16 @@ jobs:
             "
           }
 
+          # Reuse libraries unpacked on a non-root runner and pass them to later steps.
+          LIBS_DIR="${CHROME_LIBS_DIR:-$HOME/chrome-libs}"
+          use_local_libs() {
+            export LD_LIBRARY_PATH="${LIBS_DIR}/usr/lib/x86_64-linux-gnu:${LIBS_DIR}/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          }
+          if [ -f "${LIBS_DIR}/.complete" ]; then
+            use_local_libs
+          fi
+
           # The runner is long-lived, so the Chromium system libraries survive between runs.
           # `playwright install-deps` always runs apt-get update, which costs ~2 minutes here
           # (a third-party apt source is unreachable from this network) and normally installs
@@ -202,8 +212,62 @@ jobs:
           fi
 
           echo "Chromium could not start - installing system dependencies"
-          npx playwright install-deps chromium
+          if [ "$(id -u)" = "0" ] || { command -v sudo >/dev/null 2>&1 && sudo -n true; }; then
+            npx playwright install-deps chromium
+            launches
+            exit 0
+          fi
+
+          # Without root, use private apt state and unpack libraries into the runner's home.
+          WORK="${LIBS_DIR}/.apt"
+          mkdir -p "${WORK}/state/lists/partial" "${WORK}/cache/archives/partial"
+          APT=(-o "Dir::State=${WORK}/state" -o "Dir::Cache=${WORK}/cache"
+               -o "Dir::State::status=/var/lib/dpkg/status" -o Debug::NoLocking=1
+               -o APT::Sandbox::User= -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+          timeout 300 apt-get "${APT[@]}" update
+
+          # A virtual/renamed package can pass `apt-cache show` but have no download candidate.
+          # Debian 13 and Ubuntu 24.04 provide t64 replacements for several Chromium libraries.
+          ROOTS="libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libatk1.0-0
+                 libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libgbm1 libpango-1.0-0 libxcb1
+                 libxkbcommon0 libnss3 libnspr4 libcups2 libdrm2 libasound2"
+          RESOLVED=()
+          for R in $ROOTS; do
+            FOUND=no
+            for P in "$R" "${R}t64"; do
+              CANDIDATE=$(LC_ALL=C apt-cache "${APT[@]}" policy "$P" | sed -n 's/^ *Candidate: //p')
+              if [ -n "$CANDIDATE" ] && [ "$CANDIDATE" != "(none)" ]; then
+                RESOLVED+=("$P")
+                FOUND=yes
+                break
+              fi
+            done
+            if [ "$FOUND" = no ]; then
+              echo "::error::No installable Chromium dependency found for $R (or ${R}t64)"
+              exit 1
+            fi
+          done
+          echo "Resolved Chromium dependencies: ${RESOLVED[*]}"
+
+          # Let apt resolve real dependencies and alternatives rather than downloading virtual
+          # package names from `apt-cache depends`. Reinstall roots even if dpkg records them.
+          rm -f "${WORK}/cache/archives/"*.deb
+          apt-get "${APT[@]}" --yes --download-only --reinstall --no-install-recommends \
+            install "${RESOLVED[@]}"
+          COUNT=0
+          for D in "${WORK}/cache/archives/"*.deb; do
+            [ -f "$D" ] || continue
+            dpkg-deb -x "$D" "$LIBS_DIR"
+            COUNT=$((COUNT+1))
+          done
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No Chromium dependency packages were downloaded"
+            exit 1
+          fi
+          use_local_libs
           launches
+          : > "${LIBS_DIR}/.complete"
+          rm -f "${WORK}/cache/archives/"*.deb
 
       - name: Write environment file
         env:
