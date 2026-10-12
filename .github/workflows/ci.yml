@@ -30,6 +30,13 @@ jobs:
       - name: Typecheck
         run: npm run lint
 
+      # Catches broken YAML structure and shell syntax in workflow `run:` steps
+      # (e.g. a step pasted into another step's script) before they reach the runner.
+      - name: Lint workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color -shellcheck= .github/workflows/perf-run.yml .github/workflows/perf-remote.yml
+
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
