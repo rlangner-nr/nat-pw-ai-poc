@@ -272,12 +272,18 @@ jobs:
           ROOTS="libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libatk1.0-0
                  libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libgbm1 libpango-1.0-0 libxcb1 libxkbcommon0
                  libnss3 libnspr4 libcups2 libdrm2 libasound2"
-          # Debian 13 renamed some of these with a t64 suffix (libatk1.0-0t64, ...). Take whichever exists.
+          # Debian 13 renamed some of these with a t64 suffix (libatk1.0-0t64, ...) and keeps the old
+          # name only as a virtual package. `apt-cache show` succeeds for a virtual package, so ask
+          # for an installable candidate instead.
+          has_candidate() {
+            C=$(apt-cache "${APT[@]}" policy "$1" 2>/dev/null | sed -n 's/^ *Candidate: //p')
+            [ -n "$C" ] && [ "$C" != "(none)" ]
+          }
           RESOLVED=""
           for R in $ROOTS; do
-            if apt-cache "${APT[@]}" show "$R" >/dev/null 2>&1; then
+            if has_candidate "$R"; then
               RESOLVED="$RESOLVED $R"
-            elif apt-cache "${APT[@]}" show "${R}t64" >/dev/null 2>&1; then
+            elif has_candidate "${R}t64"; then
               RESOLVED="$RESOLVED ${R}t64"
             else
               echo "  no package found for $R"
