@@ -174,95 +174,163 @@ jobs:
           fetch_browser "chromium-${REV}" "chrome-linux64.zip" "chrome-linux64/chrome"
           fetch_browser "chromium_headless_shell-${REV}" "chrome-headless-shell-linux64.zip" "chrome-headless-shell-linux64/chrome-headless-shell"
 
-          - name: Ensure Chromium can start
-          run: |
-            set -eu
-          
-            launches() {
-              node -e "
-                const { chromium } = require('playwright-core');
-          
-                chromium.launch({
-                  headless: true,
-                  args: ['--no-sandbox']
+      - name: Ensure Chromium can start
+        run: |
+          set -eu
+
+          launches() {
+            node -e "
+              const { chromium } = require('playwright-core');
+              chromium.launch({ headless: true })
+                .then(async b => {
+                  const p = await b.newPage();
+                  await p.setContent('<h1>ok</h1>');
+                  console.log('Browser OK:', b.version());
+                  await b.close();
                 })
-                .then(async browser => {
-                  const page = await browser.newPage();
-                  await page.setContent('<h1>ok</h1>');
-                  console.log('Browser OK:', browser.version());
-                  await browser.close();
-                })
-                .catch(err => {
-                  console.error('launch failed:', err.message.split('\n')[0]);
-                  process.exit(1);
-                });
-              "
-            }
-          
-            if launches; then
-              echo "System libraries already present - skipping install-deps"
-              exit 0
+                .catch(e => { console.error('launch failed:', e.message.split('\n')[0]); process.exit(1); });
+            "
+          }
+
+          # Libraries unpacked without root by an earlier run (see the fallback below) live on the
+          # runner's persistent volume, so pick them up before the first launch attempt.
+          LIBS_DIR="${CHROME_LIBS_DIR:-$HOME/chrome-libs}"
+          use_local_libs() {
+            LD_LIBRARY_PATH="${LIBS_DIR}/usr/lib/x86_64-linux-gnu:${LIBS_DIR}/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH
+            # The later steps start Chromium too, so hand the path on to them.
+            echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+            if [ -d "${LIBS_DIR}/etc/fonts" ]; then
+              export FONTCONFIG_PATH="${LIBS_DIR}/etc/fonts"
+              echo "FONTCONFIG_PATH=${FONTCONFIG_PATH}" >> "$GITHUB_ENV"
             fi
-          
-            REV=$(node -p "require('./node_modules/playwright-core/browsers.json').browsers.find(b=>b.name==='chromium').revision")
-            BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
-          
-            echo "========================================="
-            echo "Runtime diagnostics"
-            echo "========================================="
-          
-            cat /etc/os-release || true
-            node -v || true
-            npm -v || true
-            npx playwright --version || true
-          
-            for BIN in \
-              "${BROWSERS_DIR}/chromium-${REV}/chrome-linux64/chrome" \
-              "${BROWSERS_DIR}/chromium-${REV}/chrome-linux/chrome" \
-              "${BROWSERS_DIR}/chromium_headless_shell-${REV}/chrome-headless-shell-linux64/chrome-headless-shell"
-            do
-              [ -x "$BIN" ] || continue
-          
-              echo ""
-              echo "Checking: $BIN"
-          
-              MISSING=$(ldd "$BIN" 2>/dev/null | grep 'not found' || true)
-          
-              if [ -n "$MISSING" ]; then
-                echo "Missing libraries:"
-                echo "$MISSING"
-              else
-                echo "No missing libraries reported by ldd"
-              fi
-          
-              echo "Direct browser launch:"
-              "$BIN" --headless --no-sandbox --version 2>&1 || true
-            done
-          
+          }
+          if [ -f "${LIBS_DIR}/.complete" ]; then
+            echo "Using Chromium libraries from ${LIBS_DIR}"
+            use_local_libs
+          fi
+
+          # The runner is long-lived, so the Chromium system libraries survive between runs.
+          # `playwright install-deps` always runs apt-get update, which costs ~2 minutes here
+          # (a third-party apt source is unreachable from this network) and normally installs
+          # nothing, so only pay for it when the browser really cannot start.
+          if launches; then
+            echo "System libraries already present - skipping install-deps"
+            exit 0
+          fi
+
+          # Playwright reports a generic "Target page, context or browser has been
+          # closed", so ask the loader and the binary itself what is actually wrong
+          # before trying a fix that needs root.
+          REV=$(node -p "require('./node_modules/playwright-core/browsers.json').browsers.find(b=>b.name==='chromium').revision")
+          BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+          echo "--------- Chromium diagnostics ---------"
+          echo "user: $(id -un) ($(id -u)), browsers dir: $BROWSERS_DIR"
+          for BIN in "${BROWSERS_DIR}/chromium-${REV}/chrome-linux64/chrome" \
+                     "${BROWSERS_DIR}/chromium-${REV}/chrome-linux/chrome" \
+                     "${BROWSERS_DIR}/chromium_headless_shell-${REV}/chrome-headless-shell-linux64/chrome-headless-shell"; do
+            [ -x "$BIN" ] || continue
             echo ""
-            echo "Clearing Playwright browser cache..."
-          
-            rm -rf ~/.cache/ms-playwright/chromium-* || true
-            rm -rf ~/.cache/ms-playwright/chromium_headless_shell-* || true
-          
-            echo ""
-            echo "Installing fresh Chromium..."
-          
-            unset PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
-          
-            npx playwright install chromium || true
-          
-            echo ""
-            echo "Installing missing dependencies..."
-          
-            npx playwright install --with-deps chromium || true
-          
-            echo ""
-            echo "Retrying browser launch..."
-          
+            echo "$BIN"
+            MISSING=$(ldd "$BIN" 2>/dev/null | grep 'not found' | sort -u || true)
+            if [ -n "$MISSING" ]; then
+              echo "  missing shared libraries:"
+              printf '%s\n' "$MISSING" | sed 's/^/    /'
+            else
+              echo "  no missing libraries according to ldd"
+            fi
+            echo "  direct start:"
+            "$BIN" --headless --no-sandbox --version 2>&1 | head -5 | sed 's/^/    /' || true
+          done
+          echo "----------------------------------------"
+
+          echo "Chromium could not start - installing system dependencies"
+          # Needs root. On a non-root runner it fails with "su: Authentication failure".
+          if [ "$(id -u)" = "0" ] && npx playwright install-deps chromium; then
             launches
-          
-            echo "Browser recovery successful"
+            exit 0
+          fi
+
+          # No root: download the missing packages (and whichever of their dependencies the image
+          # lacks) with a private apt state and unpack them into LIBS_DIR. Nothing system-wide is
+          # touched, and the result is reused by every later run on this runner.
+          echo ""
+          echo "--------- Installing Chromium libraries without root into ${LIBS_DIR} ---------"
+          WORK="${LIBS_DIR}/.apt"
+          mkdir -p "${WORK}/state/lists/partial" "${WORK}/cache/archives/partial" "${WORK}/debs"
+          APT=(-o "Dir::State=${WORK}/state" -o "Dir::Cache=${WORK}/cache" -o "Dir::State::status=/var/lib/dpkg/status"
+               -o Debug::NoLocking=1 -o APT::Sandbox::User= -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+
+          if ! timeout 300 apt-get "${APT[@]}" update > "${WORK}/update.log" 2>&1; then
+            tail -n 15 "${WORK}/update.log"
+            echo "::error::apt-get update failed - the container cannot reach a Debian mirror."
+            echo "Ask the admin to install the libraries listed above in the Jenkins image."
+            exit 1
+          fi
+          tail -n 3 "${WORK}/update.log"
+
+          ROOTS="libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 libatk1.0-0
+                 libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libgbm1 libpango-1.0-0 libxcb1 libxkbcommon0
+                 libnss3 libnspr4 libcups2 libdrm2 libasound2"
+          # Debian 13 renamed some of these with a t64 suffix (libatk1.0-0t64, ...). Take whichever exists.
+          RESOLVED=""
+          for R in $ROOTS; do
+            if apt-cache "${APT[@]}" show "$R" >/dev/null 2>&1; then
+              RESOLVED="$RESOLVED $R"
+            elif apt-cache "${APT[@]}" show "${R}t64" >/dev/null 2>&1; then
+              RESOLVED="$RESOLVED ${R}t64"
+            else
+              echo "  no package found for $R"
+            fi
+          done
+          # shellcheck disable=SC2086
+          ALL=$(apt-cache "${APT[@]}" depends --recurse --no-recommends --no-suggests --no-conflicts \
+                  --no-breaks --no-replaces --no-enhances $RESOLVED 2>/dev/null | grep -E '^[a-z0-9]' | sort -u || true)
+          echo "Resolved roots:${RESOLVED}"
+          for R in $RESOLVED; do
+            echo "  $R: dpkg status '$(dpkg-query -W -f='${db:Status-Status}' "$R" 2>/dev/null || echo none)'"
+          done
+          echo "dpkg view of atk/atspi: $(dpkg-query -W -f='${Package}=${db:Status-Status} ' 'libatk*' 'libatspi*' 2>/dev/null || echo none)"
+          echo "atk files on disk: $(find /usr/lib /lib -name 'libatk-1.0.so*' -o -name 'libatspi.so*' 2>/dev/null | tr '\n' ' ')"
+          NEED=""
+          for P in $ALL; do
+            # Fonts only satisfy a fontconfig alternative; Chromium needs none to start and they weigh ~50 MB.
+            case "$P" in fonts-*) continue ;; esac
+            if [ "$(dpkg-query -W -f='${db:Status-Status}' "$P" 2>/dev/null || true)" != "installed" ]; then
+              NEED="$NEED $P"
+            fi
+          done
+          # The roots are fetched whatever dpkg claims: a package can be marked installed while its
+          # files are gone from the image, and ldd above says these libraries are missing.
+          for R in $RESOLVED; do
+            case " $NEED " in *" $R "*) ;; *) NEED="$NEED $R" ;; esac
+          done
+          echo "Packages to fetch:${NEED}"
+
+          cd "${WORK}/debs"
+          rm -f ./*.deb
+          # shellcheck disable=SC2086
+          apt-get "${APT[@]}" download $NEED 2>&1 | tail -n 5 || true
+          COUNT=0
+          for D in ./*.deb; do
+            [ -f "$D" ] || continue
+            dpkg -x "$D" "${LIBS_DIR}"
+            COUNT=$((COUNT+1))
+          done
+          cd - >/dev/null
+          echo "Unpacked ${COUNT} package(s)"
+          [ "$COUNT" -gt 0 ] || { echo "::error::No packages were downloaded."; exit 1; }
+
+          rm -rf "${WORK}/debs"
+          use_local_libs
+          if launches; then
+            : > "${LIBS_DIR}/.complete"
+            echo "Chromium starts with the libraries in ${LIBS_DIR}; later runs reuse them."
+          else
+            echo "::error::Chromium still cannot start - missing libraries:"
+            ldd "${BROWSERS_DIR}/chromium-${REV}/chrome-linux64/chrome" 2>/dev/null | grep 'not found' || true
+            exit 1
+          fi
 
       - name: Write environment file
         env:
