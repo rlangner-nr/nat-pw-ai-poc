@@ -33,6 +33,7 @@ export type RunOptions = {
   virtualUsers?: number;
   /** Specs pass `test.step` so every virtual user's Gherkin steps are reported. */
   step?: StepRunner;
+  singlePass?: boolean;
 };
 
 /**
@@ -50,6 +51,9 @@ export async function runVirtualUsers(
 ): Promise<void> {
   const virtualUsers = options.virtualUsers ?? cfg.virtualUsers;
   const step = options.step ?? runWithoutSteps;
+  if (options.singlePass && (virtualUsers !== cfg.users.length || new Set(cfg.users).size !== cfg.users.length)) {
+    throw new Error('Config error: a single-pass workload requires one virtual user per distinct perf.users login');
+  }
   // Multi-machine: global virtual-user numbers; this machine takes every shard.total-th one.
   const { index: shardIndex, total: shardTotal } = cfg.shard;
   const mine = Array.from({ length: virtualUsers }, (_, i) => i).filter((i) => i % shardTotal === shardIndex - 1);
@@ -109,7 +113,8 @@ export async function runVirtualUsers(
   const runOne = async (index: number, position: number) => {
     const virtualUser = index + 1;
     await sleep(Math.floor(Math.random() * (cfg.arrivalWindowMs + 1)) + position * cfg.rampUpMs);
-    const user = await logins.acquire();
+    // Fixed assignment prevents a fast-finishing session from handing its login to a later user.
+    const user = options.singlePass ? shardLogins[position] : await logins.acquire();
 
     const context = await browser
       .newContext({
@@ -122,7 +127,7 @@ export async function runVirtualUsers(
         storageState: { cookies: [], origins: [] },
       })
       .catch((err) => {
-        logins.release(user);
+        if (!options.singlePass) logins.release(user);
         throw err;
       });
     // Contexts made here do not inherit the project's `use` timeouts (Playwright Test: none for
@@ -158,6 +163,7 @@ export async function runVirtualUsers(
           timer,
           step,
           reportMenu: recorder.addMenu,
+          singlePass: options.singlePass,
         }),
       );
     } catch (err) {
@@ -182,7 +188,7 @@ export async function runVirtualUsers(
       }
     } finally {
       await context.close();
-      logins.release(user);
+      if (!options.singlePass) logins.release(user);
     }
   };
 

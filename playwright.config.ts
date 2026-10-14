@@ -75,6 +75,7 @@ export default defineConfig({
       // admin logins, and NetReveal ends every earlier session of the same user.
       name: 'perf',
       testMatch: PERF_SPECS,
+      retries: 0,
       use: {
         ...devices['Desktop Chrome'],
       },

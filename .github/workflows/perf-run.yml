@@ -51,7 +51,7 @@ on:
         default: ''
         type: string
       virtual_users:
-        description: Overrides perf.virtualUsers when set (the load suite needs at least as many as you want running at once)
+        description: Legacy perf.virtualUsers override; the load suite runs each distinct perf.users login once
         required: false
         default: ''
         type: string
@@ -64,7 +64,7 @@ on:
         default: ''
         type: string
       extra_properties:
-        description: 'Extra config/local.properties lines, one key=value per line (e.g. perf.iterations=6)'
+        description: 'Extra config/local.properties lines; perf.iterations and warmup apply only to the screen baseline'
         required: false
         default: ''
         type: string

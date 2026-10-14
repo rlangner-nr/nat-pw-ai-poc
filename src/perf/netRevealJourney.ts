@@ -25,6 +25,8 @@ export type JourneyContext = {
   step: StepRunner;
   /** Receives the menu read after login (perf.screens=auto) — written to menus.json. */
   reportMenu?: (user: string, selection: MenuSelection) => void;
+  /** Catalogue workload: visit every selected screen once, in random order. */
+  singlePass?: boolean;
 };
 
 export type Journey = (ctx: JourneyContext) => Promise<void>;
@@ -79,7 +81,7 @@ function resultTitle(m: Measurement): string {
  * Every action is a Gherkin-style step (NAT wording) timed from the user's click to
  * "screen ready for use"; its result is a nested `Then …` step with the measured time.
  */
-export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, timer, step, reportMenu }) => {
+export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, timer, step, reportMenu, singlePass = false }) => {
   const auth = new NetRevealAuthCapability(page);
   const home = new HomePage(page);
   const screen = new NetRevealScreen(page);
@@ -265,13 +267,14 @@ export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, 
 
     if (!openAlertDetails) return;
     // NAT: And I select the first not locked Wlm Alert on the All Alerts Page — rows with a lock icon
-    // are skipped; an alert another user holds (NR error CFG-80017) is left and the next row tried.
-    const MAX_LOCK_RETRIES = 10;
+    // are skipped; only the repeated baseline retries a lock race (NR error CFG-80017).
+    const maxLockAttempts = singlePass ? 1 : 10;
     let opened = false;
     // Each virtual user starts at its own unlocked row so users do not fight over the same alert.
-    for (let tryNo = 0; tryNo < MAX_LOCK_RETRIES && !opened; tryNo += 1) {
+    for (let tryNo = 0; tryNo < maxLockAttempts && !opened; tryNo += 1) {
       const alertCount = await alerts.alertCount();
       if (!result.rows || alertCount === 0) {
+        if (singlePass) throw new Error('Search returned no unlocked alert to open');
         say(`And I select the first not locked Wlm Alert on the All Alerts Page  =>  no (more) unlocked alerts for these criteria`);
         return;
       }
@@ -286,9 +289,10 @@ export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, 
         );
         opened = true;
       } catch (err) {
+        if (singlePass) throw err;
         if (!(err instanceof StepFailed) || !/CFG-80017/.test(err.message)) throw err;
         // Locked by another user: back to the list (untimed) and take the next unlocked row.
-        say(`    alert locked by another user - trying the next unlocked alert (${tryNo + 1}/${MAX_LOCK_RETRIES})`);
+        say(`    alert locked by another user - trying the next unlocked alert (${tryNo + 1}/${maxLockAttempts})`);
         await page.goBack({ waitUntil: 'domcontentloaded', timeout: RECOVERY_NAV_TIMEOUT_MS }).catch(() => undefined);
         await screen
           .waitUntilReady({ target: alerts.resultsTable, timeoutMs })
@@ -365,6 +369,23 @@ export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, 
     : cfg.screens.map((path) => ({ path }));
 
   try {
+    if (singlePass) {
+      const actions: (() => Promise<unknown>)[] = menuScreens.map((item) => () =>
+        openMenuScreen(item.path, 0, false, screen.screenTitle, item.reveal),
+      );
+      actions.push(() => allAlertsFlow(0, false));
+      for (let i = actions.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [actions[i], actions[j]] = [actions[j], actions[i]];
+      }
+      await step('Single pass: every menu screen and one All Alerts flow, in random order', async () => {
+        for (const action of actions) {
+          await think();
+          await attempt(action, 0, false);
+        }
+      });
+      return;
+    }
     const total = cfg.warmupIterations + cfg.iterations;
     for (let iteration = 0; iteration < total; iteration += 1) {
       const warmup = iteration < cfg.warmupIterations;

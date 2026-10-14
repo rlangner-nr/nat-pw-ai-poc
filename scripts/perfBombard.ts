@@ -1,5 +1,5 @@
 /**
- * Load from ONE machine with several Playwright processes: perf.virtualUsers is split over
+ * Load from ONE machine with several Playwright processes: distinct perf.users logins are split over
  * --shards processes (own Node + own Chromium each, so the load spreads over CPU cores), all
  * released at the same moment by a built-in coordinator; results are merged at the end.
  *

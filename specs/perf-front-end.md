@@ -12,8 +12,9 @@ SSSMP1VUIO-2969 (All Alerts slowness). Seed: `tests/seed.spec.ts`. Project: `per
 - Hover-menu navigation, typing and think time are **not** timed.
 - Each measurement also records the slowest document/XHR time-to-first-byte in the window
   (`serverMs`, `slowestRequest`). That points a slow screen to the request, and from there to the DB query.
-- Leading `perf.warmupIterations` are recorded but excluded from statistics. Reported: p50/p90/p95/max per screen.
-- Concurrency = `perf.virtualUsers` isolated headless browser contexts in **one** browser process,
+- In the baseline, leading `perf.warmupIterations` are recorded but excluded from statistics.
+  The concurrent catalogue has no warm-up or repeated iterations. Reported: p50/p90/p95/max per screen.
+- Concurrent catalogue = one isolated headless browser context per distinct `perf.users` login in **one** browser process,
   each logged in to its own NR session. It needs no extra browsers and no Selenium Grid sessions.
   One machine carries roughly free RAM ÷ `perf.load.memoryPerUserMb` users; for more (e.g. 100), run
   the load spec on several machines at the same time and combine the results with `npm run perf:merge`.
@@ -45,7 +46,7 @@ SSSMP1VUIO-2969 (All Alerts slowness). Seed: `tests/seed.spec.ts`. Project: `per
 | `MENU Group Work > All Alerts` | Click menu leaf → Search button |
 | `ALL_ALERTS_VIEW <view>` | Choose result view (`perf.allAlerts.view`) → view label switched |
 | `ALL_ALERTS_SEARCH` | Click Search → result table redrawn |
-| `ALERT_DETAILS_OPEN` | Click alert id (row = virtual user + iteration) → Key Actions |
+| `ALERT_DETAILS_OPEN` | Click an unlocked alert id (starting row distributed by virtual user) → Key Actions |
 | `ALERT_DETAILS_BACK` | Click Back → All Alerts |
 | `DB <file>` | JDBC execute → first `perf.db.maxRows` rows |
 
@@ -64,14 +65,28 @@ is an annotation, or a failure when `perf.enforceThresholds=true`.
 
 **Scenario: virtual users run the NetReveal journey concurrently**
 1. With `perf.db.captureTopSql=true`, snapshot `v$sql`.
-2. Start `perf.virtualUsers` virtual users, `perf.rampUpMs` apart, round-robin over every login in
-   `perf.users` (SNB: all 26 investigator/supervisor roles used by NAT); each runs the §1 journey with
-   `perf.thinkTimeMs` between actions. More than `perf.load.maxUsersElsewhere` users run only where
+2. Start exactly one virtual user per distinct `perf.users` login, split disjointly across shards.
+   Keep `perf.rampUpMs`, random `perf.arrivalWindowMs` and `perf.thinkTimeMs`/`perf.thinkTimeMaxMs` pauses.
+   Each user discovers its own menu and visits every eligible screen once. Independently shuffle the
+   screens and the position of one All Alerts flow (open → optional view switch → Search → open alert → Back),
+   rather than making every user search after the same menu sequence.
+   Global actions and configured menu exclusions remain excluded; All Alerts is visited only by its flow.
+   `perf.virtualUsers`, `perf.iterations`, `perf.warmupIterations`, `perf.screens` and
+   `perf.screensPerIteration` do not limit or repeat this catalogue run.
+   More than `perf.load.maxUsersElsewhere` users run only where
    `application.environment` is in `perf.load.allowedEnvironments` (PERF); elsewhere the test is skipped.
 3. Record the run window (`window.json`) for the custom DB report (StatsPack is unavailable on AWS PERF).
 4. Snapshot `v$sql` again and report the top `perf.db.topSqlLimit` statements by elapsed time (`top-sql.csv`).
 
-Expect: error rate ≤ `perf.maxErrorRatePct`; thresholds as in §1.
+Expect: error rate ≤ `perf.maxErrorRatePct`; thresholds as in §1. Additionally, every login assigned
+to this shard must have a successful LOGIN, ALL_ALERTS_SEARCH and ALERT_DETAILS_OPEN. Empty results,
+no unlocked alert or an alert lock race do not satisfy the requirement. There is only one alert-open
+attempt: no Back/search retry cycle for locked alerts. Back after a successful open releases the lock.
+Roles without All Alerts access fail this requirement and need suitable permissions/test data.
+The `perf` project disables automatic test retries, including in CI.
+
+Offline regression checks (no browser or customer environment):
+`npx tsx --test tests/unit/perf-catalogue.test.ts`.
 
 ## §3 Screen SQL execution time (`tests/perf/db-query-timings.spec.ts`, `@perf-db`)
 

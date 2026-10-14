@@ -34,8 +34,10 @@ and the root `.env`. For DB tests, set `DB_PASSWORD` in the alias file.
 
 ### Every screen of every user
 
-`perf.screens=auto` (in `config/local.properties`): after login each user reads its own menu and opens every
-screen in it. The console lists what each user will open and what is left out:
+The concurrent workload discovers each user's menu automatically and opens every eligible screen once,
+in independently randomized order, with one All Alerts Search/open/Back flow inserted at a random position.
+Each distinct `perf.users` login runs once; baseline iteration and screen-sampling settings do not apply.
+The console lists what each user will open and what is left out:
 
 ```
 [VU 1 admin] And I read the main menu available to "admin"  →  N screens to open, M left out
@@ -44,12 +46,13 @@ screen in it. The console lists what each user will open and what is left out:
 
 `reports/perf/<runId>/menus.json` has the same per login. Reload…/ReCalculate…/Get Next… are never opened.
 
-### 100 concurrent users
+### Concurrent users
 
-`config/local.properties` holds the SNB load profile: all 26 role logins, `perf.virtualUsers=100`.
+Set `perf.users` to the distinct logins to exercise. The catalogue runs one session per login:
+100 concurrent users require 100 distinct logins, not `perf.virtualUsers=100` with fewer accounts.
 Loads above 5 users run only on `perf` / `perf2`; on qa/dev aliases the load test is skipped.
 One machine needs roughly 150 MB free RAM per user. Where that is not available, start the
-same load run on several machines with a smaller `perf.virtualUsers` each (e.g. 4 × 25), then:
+same list with disjoint `PERF_SHARD` assignments on several machines (e.g. `1/4` through `4/4`), then:
 
 ```powershell
 npm run perf:merge -- reports/perf/<runA> reports/perf/<runB> reports/perf/<runC> reports/perf/<runD> --out=reports/perf/R2.06.1_load_100vu
@@ -68,11 +71,13 @@ Keep an agreed baseline as `perf/baselines/<release>/summary.json` and point `pe
 ## Before running on PERF
 
 - PERF is switched off to save costs — agree the slot with Yaro first.
-- Concurrency = browser contexts in one Chromium (`perf.virtualUsers`), **not** Selenium Grid
+- Concurrency = one browser context per distinct `perf.users` login in one Chromium, **not** Selenium Grid
   sessions, so the 4-session Grid limit does not apply. Size the agent for ~150–300 MB RAM per user.
 - Use one distinct login per virtual user (`perf.users`); NR may end an earlier session of the same user.
 - The journey is read-only except for the alert lock taken by opening an alert (released by Back).
   Virtual users open different rows to avoid contending for one lock.
+- Each user must complete Search and open an alert successfully. No locked-alert retry loop is used;
+  missing access, empty results or a lock race are reported as unmet coverage. Perf tests have no CI retry.
 - `perf.db.captureTopSql` needs SELECT on `V_$SQL` for `DbUsername`. `top-sql.csv` holds SQL text
   that may contain literal customer values — keep it inside the project and attach it only to internal tickets.
 - `db-query-timings` is expected to **fail** until SSSMP1VUIO-2969 is fixed (target < 1 s).
