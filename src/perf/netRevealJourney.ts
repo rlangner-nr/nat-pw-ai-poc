@@ -223,7 +223,10 @@ export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, 
   let allAlertsItem: MenuScreen | null = null;
 
   const allAlertsFlow = async (iteration: number, warmup: boolean) => {
-    const { menuPath, view, search, openAlertDetails, criteria } = cfg.allAlerts;
+    const { menuPath, view, search, openAlertDetails } = cfg.allAlerts;
+    const criteria: [string, string][] = singlePass
+      ? [...cfg.allAlerts.criteria.filter(([field]) => field !== 'Date From'), ['Date From', '01/01/2020']]
+      : cfg.allAlerts.criteria;
     // Ready = an element only All Alerts has (the Search button may be collapsed with the previous
     // results); landing on any other screen fails at once, naming it.
     await openAllAlerts(menuPath, iteration, warmup);

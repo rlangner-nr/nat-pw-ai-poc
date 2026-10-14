@@ -71,6 +71,9 @@ is an annotation, or a failure when `perf.enforceThresholds=true`.
    screens and the position of one All Alerts flow (open → optional view switch → Search → open alert → Back),
    rather than making every user search after the same menu sequence.
    Global actions and configured menu exclusions remain excluded; All Alerts is visited only by its flow.
+   Before Search, always set Created Between (Date From) to `01/01/2020`, overriding the application's
+   default or a configured Date From. Other criteria still come from `perf.allAlerts.criteria`;
+   when it is empty, only this start date is filled (no Alert ID wildcard).
    `perf.virtualUsers`, `perf.iterations`, `perf.warmupIterations`, `perf.screens` and
    `perf.screensPerIteration` do not limit or repeat this catalogue run.
    More than `perf.load.maxUsersElsewhere` users run only where
