@@ -6,7 +6,7 @@ import { AllAlertsPage } from '../../src/ui/pages/AllAlertsPage';
 import { AlertDetailsPage } from '../../src/ui/pages/AlertDetailsPage';
 import { MainMenuPage, MenuItemNotFoundError, type MenuScreen } from '../../src/ui/pages/MainMenuPage';
 import { NetRevealScreen, NetRevealScreenError } from '../../src/ui/pages/NetRevealScreen';
-import { netRevealJourney, runWithoutSteps, SCREEN } from '../../src/perf/netRevealJourney';
+import { netRevealJourney, runWithoutSteps, SCREEN, StepFailed } from '../../src/perf/netRevealJourney';
 import { loadPerfConfig } from '../../src/perf/perfConfig';
 import { PerfRecorder } from '../../src/perf/perfRecorder';
 import { ScreenTimer } from '../../src/perf/screenTimer';
@@ -26,6 +26,7 @@ function mockJourney(t: TestContext, options: { locked?: boolean; empty?: boolea
     on: () => page,
     off: () => page,
     url: () => 'https://example.invalid/netreveal/',
+    isClosed: () => false,
     goBack: async () => { events.push('retry-back'); },
   } as unknown as Page;
   const screens: MenuScreen[] = [...paths, 'Group Work->All Alerts', 'Services->Reload Configuration'].map((path, i) => ({
@@ -133,6 +134,71 @@ test('another random draw puts All Alerts at a different position', async (t) =>
   assert.deepEqual(events.filter((e) => e.startsWith('reveal:')), [
     ...paths, 'Group Work->All Alerts',
   ].map((path) => `reveal:${path}`));
+});
+
+test('login retries four failures then continues after the fifth attempt succeeds', async (t) => {
+  const { run, recorder, events } = mockJourney(t);
+  let attempts = 0;
+  t.mock.method(NetRevealAuthCapability.prototype, 'loginAs', async (_user: string, timeoutMs?: number) => {
+    assert.ok(timeoutMs && timeoutMs > 0 && timeoutMs <= 10000);
+    attempts += 1;
+    if (attempts < 5) throw new Error('Temporary login failure');
+  });
+  await run();
+  assert.equal(attempts, 5);
+  assert.equal(events.filter((e) => e === 'environment').length, 5);
+  assert.equal(recorder.all().filter((m) => m.screen === SCREEN.login).length, 1);
+  assert.ok(recorder.all().some((m) => m.screen === SCREEN.login && m.status === 'ok'));
+  assert.equal(recorder.errors().length, 0);
+  assert.ok(events.includes('search'));
+});
+
+test('five failed logins record a final LOGIN error and never start the menu journey', async (t) => {
+  const { run, recorder, events } = mockJourney(t);
+  let attempts = 0;
+  t.mock.method(NetRevealAuthCapability.prototype, 'loginAs', async () => {
+    attempts += 1;
+    throw new Error('Login unavailable');
+  });
+  await assert.rejects(run(), StepFailed);
+  assert.equal(attempts, 5);
+  assert.equal(events.filter((e) => e === 'environment').length, 5);
+  assert.equal(recorder.errors().length, 1);
+  assert.equal(recorder.errors()[0].screen, SCREEN.login);
+  assert.match(recorder.errors()[0].error, /after 5 attempt.*Login unavailable/);
+  assert.ok(!events.includes('search'));
+});
+
+test('environment navigation failures are retried and success stops further attempts', async (t) => {
+  const { run, recorder } = mockJourney(t);
+  let attempts = 0;
+  t.mock.method(NetRevealAuthCapability.prototype, 'openEnvironment', async (timeoutMs?: number) => {
+    assert.ok(timeoutMs && timeoutMs > 0 && timeoutMs <= 10000);
+    attempts += 1;
+    if (attempts === 1) throw new Error('Login page unavailable');
+  });
+  await run();
+  assert.equal(attempts, 2);
+  assert.equal(recorder.errors().length, 0);
+});
+
+test('login readiness failures are retried within the short attempt budget', async (t) => {
+  const { run, recorder } = mockJourney(t);
+  const ready = NetRevealScreen.prototype.waitUntilReady;
+  let attempts = 0;
+  t.mock.method(NetRevealScreen.prototype, 'waitUntilReady', async function (
+    this: NetRevealScreen, condition: Parameters<typeof ready>[0],
+  ) {
+    if (condition.timeoutMs <= 10000) {
+      attempts += 1;
+      assert.ok(condition.timeoutMs > 0);
+      if (attempts < 5) throw new Error('Home not ready');
+    }
+    return ready.call(this, condition);
+  });
+  await run();
+  assert.equal(attempts, 5);
+  assert.equal(recorder.errors().length, 0);
 });
 
 test('catalogue sets Created Between from 01/01/2020 before Search, overriding a configured start date', async (t) => {

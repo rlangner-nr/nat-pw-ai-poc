@@ -45,15 +45,15 @@ export class NetRevealAuthCapability {
     this.shellHeaderPage = new ShellHeaderPage(page);
   }
 
-  async openEnvironment(): Promise<void> {
+  async openEnvironment(timeoutMs?: number): Promise<void> {
     await this.loginPage.open();
-    await this.loginPage.assertOnLoginPage();
+    await this.loginPage.assertOnLoginPage(timeoutMs);
   }
 
   /** Migrated from NAT LoginHelper.iLogIntoNetRevealAs */
-  async loginAs(userType: string): Promise<void> {
+  async loginAs(userType: string, timeoutMs?: number): Promise<void> {
     const { username, password } = resolveCredentials(userType);
-    await this.loginPage.login(username, password);
+    await this.loginPage.login(username, password, timeoutMs);
   }
 
   async assertHomeHeaderAvailable(): Promise<void> {

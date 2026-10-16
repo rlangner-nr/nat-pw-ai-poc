@@ -15,7 +15,19 @@ export class LoginPage extends BasePage {
     return this.page;
   }
 
-  async login(username: string, password: string): Promise<void> {
+  async login(username: string, password: string, timeoutMs?: number): Promise<void> {
+    if (timeoutMs !== undefined) {
+      const deadline = Date.now() + timeoutMs;
+      const remaining = () => {
+        const ms = deadline - Date.now();
+        if (ms <= 0) throw new Error('Login form submission timed out');
+        return ms;
+      };
+      await this.page.fill(this.usernameSelector, username, { timeout: remaining() });
+      await this.page.fill(this.passwordSelector, password, { timeout: remaining() });
+      await this.page.click(this.submitSelector, { timeout: remaining() });
+      return;
+    }
     await this.fill(this.usernameSelector, username);
     await this.fill(this.passwordSelector, password);
     await this.click(this.submitSelector);
@@ -23,8 +35,11 @@ export class LoginPage extends BasePage {
 
   /** Migrated from NAT LoginPage.getLoginButtonText() assertion. */
   async assertOnLoginPage(timeout = 15000): Promise<true> {
+    const deadline = Date.now() + timeout;
     await this.waitForVisible(this.submitSelector, timeout);
-    const text = (await this.page.textContent(this.submitSelector) || '').trim();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('Login page did not become ready in time');
+    const text = (await this.page.textContent(this.submitSelector, { timeout: remaining }) || '').trim();
     if (!text.includes('Login')) {
       throw new Error(`Expected login button text to contain "Login", got: "${text}"`);
     }

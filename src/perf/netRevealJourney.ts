@@ -50,6 +50,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Untimed navigation back to a page with the menu. */
 const RECOVERY_NAV_TIMEOUT_MS = 15000;
+const LOGIN_ATTEMPTS = 5;
+const LOGIN_ATTEMPT_TIMEOUT_MS = 10000;
 
 function shortResult(m: Measurement): string {
   if (m.status === 'skipped' && m.skipReason === 'nr-error') {
@@ -329,19 +331,42 @@ export const netRevealJourney: Journey = async ({ page, cfg, virtualUser, user, 
   };
 
   say(`Scenario: virtual user ${virtualUser} of ${cfg.virtualUsers} as "${user}"`);
-  await step('Given I open NetReveal Environment', async () => {
-    say('Given I open NetReveal Environment');
-    await page.goto(resolveBaseUrl(), { waitUntil: 'domcontentloaded' });
-    await auth.openEnvironment();
-  });
-
-  // Each virtual user is its own NR session; LOGIN is a timed screen.
+  // One LOGIN measurement includes all attempts, so recovery cannot hide login latency.
   await timed(
     `When I log into NetReveal as "${user}"`,
     { screen: SCREEN.login, iteration: 0, warmup: false },
-    () => auth.loginAs(user),
-    (network) => screen.waitUntilReady({ network, target: page.locator(home.homeHeaderSelector), newDocument: true, timeoutMs }),
-    () => screen.markStale(),
+    async () => undefined,
+    async (network) => {
+      for (let attempt = 1; attempt <= LOGIN_ATTEMPTS; attempt += 1) {
+        const deadline = Date.now() + LOGIN_ATTEMPT_TIMEOUT_MS;
+        const remaining = () => {
+          const ms = deadline - Date.now();
+          if (ms <= 0) throw new Error(`Login attempt exceeded ${LOGIN_ATTEMPT_TIMEOUT_MS} ms`);
+          return ms;
+        };
+        try {
+          await step(`Given I open NetReveal Environment (login attempt ${attempt}/${LOGIN_ATTEMPTS})`, async () => {
+            await page.goto(resolveBaseUrl(), { waitUntil: 'domcontentloaded', timeout: remaining() });
+            await auth.openEnvironment(remaining());
+          });
+          await screen.markStale();
+          await auth.loginAs(user, remaining());
+          return await screen.waitUntilReady({
+            network,
+            target: page.locator(home.homeHeaderSelector),
+            newDocument: true,
+            timeoutMs: remaining(),
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message.split('\n')[0] : String(err);
+          say(`Login attempt ${attempt}/${LOGIN_ATTEMPTS} failed: ${message}`);
+          if (attempt === LOGIN_ATTEMPTS || page.isClosed()) {
+            throw new Error(`Login failed after ${attempt} attempt(s): ${message}`);
+          }
+        }
+      }
+      throw new Error('Login attempts exhausted');
+    },
   );
 
   // perf.screens=auto: the screens this user's own menu offers, read once after login.

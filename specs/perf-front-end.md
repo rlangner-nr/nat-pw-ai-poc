@@ -41,7 +41,7 @@ SSSMP1VUIO-2969 (All Alerts slowness). Seed: `tests/seed.spec.ts`. Project: `per
 
 | Id | Action → ready |
 |---|---|
-| `LOGIN` | Submit login → Home header |
+| `LOGIN` | Open login page → submit login → Home header, including any retries |
 | `MENU <A > B>` | Click menu leaf (`perf.screens`) → new screen `h1` / `#content` / `#screenId` |
 | `MENU Group Work > All Alerts` | Click menu leaf → Search button |
 | `ALL_ALERTS_VIEW <view>` | Choose result view (`perf.allAlerts.view`) → view label switched |
@@ -51,6 +51,12 @@ SSSMP1VUIO-2969 (All Alerts slowness). Seed: `tests/seed.spec.ts`. Project: `per
 | `DB <file>` | JDBC execute → first `perf.db.maxRows` rows |
 
 ## §1 Screen response-time baseline (`tests/perf/screen-timings.spec.ts`, `@perf-screens`)
+
+Perf login makes up to **5 attempts**, stopping on success. Each attempt shares a **10 s budget**
+across opening the environment, filling/submitting the form and waiting for Home, with no backoff.
+Each retry opens the login URL again; failed attempts are shown in the step log. A recovered login
+produces one successful LOGIN measurement including total elapsed recovery time; exhausting the attempts
+records a failed LOGIN and fails the run. Other screen timeouts and whole-test retries are unchanged.
 
 **Scenario: key screens are timed from user action to ready for a single user**
 1. `perf.baselineUser` logs in (timed `LOGIN`).
