@@ -82,10 +82,14 @@ is an annotation, or a failure when `perf.enforceThresholds=true`.
 4. Snapshot `v$sql` again and report the top `perf.db.topSqlLimit` statements by elapsed time (`top-sql.csv`).
 
 Expect: error rate ≤ `perf.maxErrorRatePct`; thresholds as in §1. Additionally, every login assigned
-to this shard must have a successful LOGIN, ALL_ALERTS_SEARCH and ALERT_DETAILS_OPEN. Empty results,
+to this shard must have a successful LOGIN. ALL_ALERTS_SEARCH and ALERT_DETAILS_OPEN must also succeed
+unless opening the configured All Alerts menu was explicitly recorded as skipped for this role
+(`perf.skipUnavailableScreens=true`). This uses the logged-in user's actual menu access, not username
+prefixes or a hardcoded role list; users without access still visit their other eligible screens.
+Missing measurements, navigation errors and NetReveal error-page skips do not grant this exemption. Empty results,
 no unlocked alert or an alert lock race do not satisfy the requirement. There is only one alert-open
 attempt: no Back/search retry cycle for locked alerts. Back after a successful open releases the lock.
-Roles without All Alerts access fail this requirement and need suitable permissions/test data.
+Users with All Alerts access still need suitable permissions/test data to search and open an alert.
 The `perf` project disables automatic test retries, including in CI.
 
 Offline regression checks (no browser or customer environment):

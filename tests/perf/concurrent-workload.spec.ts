@@ -1,6 +1,7 @@
 import { test, expect } from '../fixtures';
 import { diffSqlStats } from '../../src/capabilities/oracleDb';
-import { netRevealJourney, SCREEN } from '../../src/perf/netRevealJourney';
+import { netRevealJourney } from '../../src/perf/netRevealJourney';
+import { missingCatalogueScreens } from '../../src/perf/catalogueValidation';
 import { runVirtualUsers } from '../../src/perf/virtualUsers';
 import { assertPerfRun, gherkinSteps, prepareLoadRun } from './perfAssertions';
 
@@ -56,12 +57,8 @@ test.describe('Concurrent NAT workload', () => {
 
       assertPerfRun(perfRecorder, workload);
       const shardUsers = users.filter((_, i) => i % workload.shard.total === workload.shard.index - 1);
-      const missing = shardUsers.flatMap((user) =>
-        [SCREEN.login, SCREEN.allAlertsSearch, SCREEN.alertDetailsOpen]
-          .filter((screen) => !perfRecorder.all().some((m) => m.user === user && m.screen === screen && m.status === 'ok'))
-          .map((screen) => `${user}: ${screen}`),
-      );
-      expect(missing, 'every listed user must log in, search successfully and open an alert').toEqual([]);
+      const missing = missingCatalogueScreens(perfRecorder.all(), shardUsers, workload.allAlerts.menuPath);
+      expect(missing, 'every listed user must log in; users with All Alerts access must search and open an alert').toEqual([]);
     },
   );
 });

@@ -4,17 +4,18 @@ import type { Browser, Page, Locator } from '@playwright/test';
 import { NetRevealAuthCapability } from '../../src/capabilities/netRevealAuthCapability';
 import { AllAlertsPage } from '../../src/ui/pages/AllAlertsPage';
 import { AlertDetailsPage } from '../../src/ui/pages/AlertDetailsPage';
-import { MainMenuPage, type MenuScreen } from '../../src/ui/pages/MainMenuPage';
+import { MainMenuPage, MenuItemNotFoundError, type MenuScreen } from '../../src/ui/pages/MainMenuPage';
 import { NetRevealScreen, NetRevealScreenError } from '../../src/ui/pages/NetRevealScreen';
 import { netRevealJourney, runWithoutSteps, SCREEN } from '../../src/perf/netRevealJourney';
 import { loadPerfConfig } from '../../src/perf/perfConfig';
 import { PerfRecorder } from '../../src/perf/perfRecorder';
 import { ScreenTimer } from '../../src/perf/screenTimer';
 import { runVirtualUsers } from '../../src/perf/virtualUsers';
+import { missingCatalogueScreens } from '../../src/perf/catalogueValidation';
 
 const paths = ['My Work->Home', 'My Work->Inbox', 'Group Work->Worklist'];
 
-function mockJourney(t: TestContext, options: { locked?: boolean; empty?: boolean; random?: number } = {}) {
+function mockJourney(t: TestContext, options: { locked?: boolean; empty?: boolean; random?: number; noAllAlerts?: boolean } = {}) {
   const events: string[] = [];
   const locator: Locator = new Proxy({} as Locator, {
     get: (_target, property) => property === 'then' ? undefined : () => locator,
@@ -39,7 +40,11 @@ function mockJourney(t: TestContext, options: { locked?: boolean; empty?: boolea
   t.mock.method(NetRevealAuthCapability.prototype, 'openEnvironment', async () => undefined);
   t.mock.method(NetRevealAuthCapability.prototype, 'loginAs', async () => { events.push('login'); });
   t.mock.method(NetRevealAuthCapability.prototype, 'logout', async () => { events.push('logout'); });
-  t.mock.method(MainMenuPage.prototype, 'discoverScreens', async () => screens);
+  t.mock.method(MainMenuPage.prototype, 'discoverScreens', async () =>
+    screens.filter((s) => !options.noAllAlerts || s.path !== 'Group Work->All Alerts'));
+  t.mock.method(MainMenuPage.prototype, 'revealLeaf', async (path: string) => {
+    throw new MenuItemNotFoundError(`Menu item not found (path "${path}")`);
+  });
   t.mock.method(MainMenuPage.prototype, 'isAvailable', async () => true);
   t.mock.method(MainMenuPage.prototype, 'collapse', async () => undefined);
   t.mock.method(MainMenuPage.prototype, 'revealScreen', async (screen: MenuScreen) => {
@@ -67,6 +72,7 @@ function mockJourney(t: TestContext, options: { locked?: boolean; empty?: boolea
     ...loadPerfConfig(),
     virtualUsers: 1,
     screensAuto: true,
+    skipUnavailableScreens: true,
     iterations: 10,
     warmupIterations: 3,
     screensPerIteration: 1,
@@ -112,6 +118,7 @@ test('catalogue visits all eligible menu screens and the alert flow once, withou
     assert.equal(measurements.filter((m) => m.screen === screen && m.status === 'ok').length, 1, screen);
   }
   assert.equal(measurements.length, 8);
+  assert.deepEqual(missingCatalogueScreens(measurements, ['catalogue-user'], 'Group Work->All Alerts'), []);
   assert.ok(measurements.every((m) => !m.warmup && m.iteration === 0));
   assert.equal(events.filter((e) => e === 'logout').length, 1);
   assert.ok(!events.some((e) => e.includes('Reload Configuration')));
@@ -162,7 +169,61 @@ test('empty results record an explicit failure, not a successful alert visit', a
   await run();
   assert.ok(recorder.errors().some((m) => m.screen === SCREEN.journeyError && /no unlocked alert/.test(m.error)));
   assert.ok(!events.includes('open-alert'));
+  assert.deepEqual(missingCatalogueScreens(recorder.all(), ['catalogue-user'], 'Group Work->All Alerts'), [
+    'catalogue-user: ALERT_DETAILS_OPEN',
+  ]);
   assert.equal(events.at(-1), 'logout');
+});
+
+test('a role without All Alerts still visits its menu and satisfies role-aware validation', async (t) => {
+  const { run, recorder, events } = mockJourney(t, { noAllAlerts: true });
+  await run();
+  assert.ok(recorder.skipped().some((m) =>
+    m.screen === SCREEN.menu('Group Work->All Alerts') && m.skipReason === 'role'));
+  for (const screen of [SCREEN.login, ...paths.map(SCREEN.menu)]) {
+    assert.ok(recorder.all().some((m) => m.screen === screen && m.status === 'ok'), screen);
+  }
+  assert.ok(!events.includes('search'));
+  assert.ok(!events.includes('open-alert'));
+  assert.deepEqual(missingCatalogueScreens(recorder.all(), ['catalogue-user'], 'Group Work->All Alerts'), []);
+  assert.equal(events.at(-1), 'logout');
+});
+
+test('only an explicit role skip exempts All Alerts actions, never login or another user', async (t) => {
+  const { run, recorder } = mockJourney(t, { noAllAlerts: true });
+  await run();
+  const measurements = recorder.all();
+  const menuPath = 'Group Work->All Alerts';
+  const skip = measurements.find((m) => m.screen === SCREEN.menu(menuPath))!;
+  const requiredAlerts = ['catalogue-user: ALL_ALERTS_SEARCH', 'catalogue-user: ALERT_DETAILS_OPEN'];
+  for (const replacement of [
+    [],
+    [{ ...skip, skipReason: 'nr-error' as const }],
+    [{ ...skip, status: 'error' as const }],
+    [{ ...skip, status: 'ok' as const }],
+    [skip, { ...skip, status: 'error' as const }],
+    [{ ...skip, screen: SCREEN.menu('My Work->Inbox') }],
+  ]) {
+    assert.deepEqual(missingCatalogueScreens([
+      ...measurements.filter((m) => m !== skip), ...replacement,
+    ], ['catalogue-user'], menuPath), requiredAlerts);
+  }
+  assert.deepEqual(missingCatalogueScreens(
+    measurements.filter((m) => m.screen !== SCREEN.login), ['catalogue-user'], menuPath,
+  ), ['catalogue-user: LOGIN']);
+  assert.deepEqual(missingCatalogueScreens(measurements, ['other-user'], menuPath), [
+    'other-user: LOGIN', 'other-user: ALL_ALERTS_SEARCH', 'other-user: ALERT_DETAILS_OPEN',
+  ]);
+});
+
+test('missing All Alerts access remains a failure when role skipping is disabled', async (t) => {
+  const { run, recorder, cfg } = mockJourney(t, { noAllAlerts: true });
+  cfg.skipUnavailableScreens = false;
+  await run();
+  assert.ok(recorder.errors().some((m) => m.screen === SCREEN.menu(cfg.allAlerts.menuPath)));
+  assert.deepEqual(missingCatalogueScreens(recorder.all(), ['catalogue-user'], cfg.allAlerts.menuPath), [
+    'catalogue-user: ALL_ALERTS_SEARCH', 'catalogue-user: ALERT_DETAILS_OPEN',
+  ]);
 });
 
 test('the baseline still respects its iterations and warmup settings', async (t) => {
