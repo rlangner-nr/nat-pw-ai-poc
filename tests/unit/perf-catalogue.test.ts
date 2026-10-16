@@ -140,7 +140,7 @@ test('login retries four failures then continues after the fifth attempt succeed
   const { run, recorder, events } = mockJourney(t);
   let attempts = 0;
   t.mock.method(NetRevealAuthCapability.prototype, 'loginAs', async (_user: string, timeoutMs?: number) => {
-    assert.ok(timeoutMs && timeoutMs > 0 && timeoutMs <= 10000);
+    assert.ok(timeoutMs && timeoutMs > 10000 && timeoutMs <= 30000);
     attempts += 1;
     if (attempts < 5) throw new Error('Temporary login failure');
   });
@@ -173,7 +173,7 @@ test('environment navigation failures are retried and success stops further atte
   const { run, recorder } = mockJourney(t);
   let attempts = 0;
   t.mock.method(NetRevealAuthCapability.prototype, 'openEnvironment', async (timeoutMs?: number) => {
-    assert.ok(timeoutMs && timeoutMs > 0 && timeoutMs <= 10000);
+    assert.ok(timeoutMs && timeoutMs > 10000 && timeoutMs <= 30000);
     attempts += 1;
     if (attempts === 1) throw new Error('Login page unavailable');
   });
@@ -182,16 +182,16 @@ test('environment navigation failures are retried and success stops further atte
   assert.equal(recorder.errors().length, 0);
 });
 
-test('login readiness failures are retried within the short attempt budget', async (t) => {
+test('login readiness failures are retried within the 30-second attempt budget', async (t) => {
   const { run, recorder } = mockJourney(t);
   const ready = NetRevealScreen.prototype.waitUntilReady;
   let attempts = 0;
   t.mock.method(NetRevealScreen.prototype, 'waitUntilReady', async function (
     this: NetRevealScreen, condition: Parameters<typeof ready>[0],
   ) {
-    if (condition.timeoutMs <= 10000) {
+    if (condition.timeoutMs <= 30000) {
       attempts += 1;
-      assert.ok(condition.timeoutMs > 0);
+      assert.ok(condition.timeoutMs > 10000);
       if (attempts < 5) throw new Error('Home not ready');
     }
     return ready.call(this, condition);

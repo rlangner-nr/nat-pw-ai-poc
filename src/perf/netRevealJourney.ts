@@ -51,7 +51,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Untimed navigation back to a page with the menu. */
 const RECOVERY_NAV_TIMEOUT_MS = 15000;
 const LOGIN_ATTEMPTS = 5;
-const LOGIN_ATTEMPT_TIMEOUT_MS = 10000;
+const LOGIN_ATTEMPT_TIMEOUT_MS = 30000;
 
 function shortResult(m: Measurement): string {
   if (m.status === 'skipped' && m.skipReason === 'nr-error') {

@@ -52,7 +52,7 @@ SSSMP1VUIO-2969 (All Alerts slowness). Seed: `tests/seed.spec.ts`. Project: `per
 
 ## §1 Screen response-time baseline (`tests/perf/screen-timings.spec.ts`, `@perf-screens`)
 
-Perf login makes up to **5 attempts**, stopping on success. Each attempt shares a **10 s budget**
+Perf login makes up to **5 attempts**, stopping on success. Each attempt shares a **30 s budget**
 across opening the environment, filling/submitting the form and waiting for Home, with no backoff.
 Each retry opens the login URL again; failed attempts are shown in the step log. A recovered login
 produces one successful LOGIN measurement including total elapsed recovery time; exhausting the attempts
